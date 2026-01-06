@@ -3,7 +3,7 @@ import { newInjectedPage } from 'fingerprint-injector';
 import { FingerprintGenerator } from 'node_modules/fingerprint-generator/fingerprint-generator';
 import puppeteer from "puppeteer-extra"
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import { Browser, Page } from "puppeteer";
+import { Browser } from "puppeteer";
 import { CaptchaSolverService } from './captcha-solver.service';
 
 puppeteer.use(StealthPlugin());
@@ -26,9 +26,9 @@ interface WaitingRequest {
 
 const generator = new FingerprintGenerator({
     devices: ['desktop'],
-    operatingSystems: ['linux'],
+    operatingSystems: ['macos'],
     browsers: ['chrome'],
-    // locales: ['ko-KR'],
+    locales: ['ko-KR'],
     screen: {
         maxHeight: 1080,
         maxWidth: 1920,
@@ -50,7 +50,7 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
     private prepareIntervalTime: number = 5 * 60 * 1000; // 5 menit
     private isPreparing: boolean = false;
     private proxies: string[] = [];
-    private BROWSERLESS_TOKEN = 'opoaeoleh'
+    private BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '';
     private BROWSERLESS_URL = process.env.BROWSERLESS_URL || 'localhost:3000';
 
     constructor(private readonly captchaSolverService: CaptchaSolverService) {
@@ -71,59 +71,25 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
             console.log(`Using proxy: ${proxy}`);
             try {
                 const [ip, port] = proxy.split(':');
-                // const browser = await puppeteer.launch({
-                //     headless: false,
-                //     args: [
-                //         '--no-sandbox',
-                //         '--disable-setuid-sandbox',
-                //         '--disable-dev-shm-usage',
-                //         `--proxy-server=${ip}:${port}`,
-                //     ],
-                //     defaultViewport: null,
-                // });
-                // const launchArgs = {
-                //     headless: false,
-                //     args: [ `--proxy-server=http://${ip}:${port}`],
-                //     // args: [`--user-data-dir=~/u/naver-${i}`],
-                //     // defaultViewport: {
-                //     //     width: 1920,
-                //     //     height: 1080,
-                //     // },
-                //     defaultViewport: null,
-                // };
-                // const queryParams = new URLSearchParams({
-                //     token: this.BROWSERLESS_TOKEN,
-                //     timeout: "6000000",
-                //     launch: JSON.stringify(launchArgs)
-                // }).toString();
-                // const browserWSEndpoint = `ws://${this.BROWSERLESS_URL}?${queryParams}`;
-                // const browser = await puppeteer.connect({
-                //     browserWSEndpoint,
-                //     // defaultViewport: {
-                //     //     width: 1920,
-                //     //     height: 1080,
-                //     // },
-                //     defaultViewport: null,
-                // });
-                const browser = await puppeteer.launch({
-                    headless: true,
+                const launchArgs = {
+                    headless: false,
                     args: [
                         `--proxy-server=http://${ip}:${port}`,
-                        // '--disable-gpu',
-                        // '--disable-dev-shm-usage',
-                        // '--disable-setuid-sandbox',
-                        '--no-sandbox',
-                        // ssl
-                        '--ignore-certificate-errors',
-                        // user data dir
-                        `--user-data-dir=~/u/naver-${ip}`,
+                        `--user-data-dir=~/u/naver-${Buffer.from(proxy).toString('base64')}`
                     ],
                     // args: [`--user-data-dir=~/u/naver-${i}`],
-                    // defaultViewport: {
-                    //     width: 1920,
-                    //     height: 1080,
-                    // },
                     defaultViewport: null,
+                };
+                const queryParams = new URLSearchParams({
+                    token: this.BROWSERLESS_TOKEN,
+                    timeout: "6000000",
+                    launch: JSON.stringify(launchArgs)
+                }).toString();
+                const browserWSEndpoint = `ws://${this.BROWSERLESS_URL}?${queryParams}`;
+                const browser = await puppeteer.connect({
+                    browserWSEndpoint,
+                    defaultViewport: null,
+                    acceptInsecureCerts: true,
                 });
                 this.pool.push({
                     browser,
@@ -193,17 +159,23 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
                 password,
             });
 
-            // set user agent
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7390.54 Safari/537.36');
-
-            // Navigate ke blank page untuk warm up
-            await this.gotoWithCaptchaSolver(page, "https://naver.com");
-            await this.gotoWithCaptchaSolver(page, "https://shopping.naver.com/ns/home");
-
             // check ip https://api64.ipify.org?format=json use evaluate
             const ipResult = await page.evaluate(() => fetch('https://api64.ipify.org?format=json').then(res => res.json()));
             console.log(`[PREPARE] Check IP: ${ipResult.ip}`);
 
+            console.log(`[PREPARE] Navigating to https://google.com...`);
+            await this.captchaSolverService.gotoWithCaptchaSolver(page, "https://google.com");
+            console.log(`[PREPARE] Navigating to https://naver.com...`);
+            await this.captchaSolverService.gotoWithCaptchaSolver(page, "https://naver.com");
+            console.log(`[PREPARE] Navigating to https://shopping.naver.com/ns/home...`);
+            await this.captchaSolverService.gotoWithCaptchaSolver(page, "https://shopping.naver.com/ns/home", 'networkidle2');
+
+            // select random a href="https://smartstore.naver.com/*
+            const smartstoreLinks = await page.$$('a[href^="https://smartstore.naver.com"]');
+            console.log(`[PREPARE] Found ${smartstoreLinks.length} smartstore links`);
+            const randomLink = smartstoreLinks[Math.floor(Math.random() * smartstoreLinks.length)];
+            // scroll to random link
+            await randomLink.scrollIntoView()
 
             // screenshot
             await page.screenshot({
@@ -321,22 +293,6 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
         });
     }
 
-    // Opsi 3: IMMEDIATE
-    async getBrowserImmediate(): Promise<Browser | null> {
-        const availableBrowser = this.pool.find(p => !p.inUse);
-
-        if (availableBrowser) {
-            // Ensure browser is prepared before returning
-            await this.prepareIfNeeded(availableBrowser);
-
-            availableBrowser.inUse = true;
-            availableBrowser.lastUsedAt = Date.now();
-            return availableBrowser.browser;
-        }
-
-        return null;
-    }
-
     releaseBrowser(browser: Browser): void {
         const pooledBrowser = this.pool.find(p => p.browser === browser);
 
@@ -374,39 +330,6 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
         );
     }
 
-    getPoolStatus() {
-        const inUse = this.pool.filter(p => p.inUse).length;
-        const available = this.pool.filter(p => !p.inUse).length;
-        const prepared = this.pool.filter(p => p.isPrepared).length;
-        const waiting = this.waitingQueue.length;
-        const avgWaitTime = this.waitingQueue.length > 0
-            ? this.waitingQueue.reduce((sum, w) => sum + (Date.now() - w.timestamp), 0) / this.waitingQueue.length
-            : 0;
-
-        return {
-            inUse,
-            available,
-            prepared,
-            waiting,
-            total: this.pool.length,
-            avgWaitTimeMs: Math.round(avgWaitTime),
-            utilizationPercent: Math.round((inUse / this.pool.length) * 100),
-            isPreparing: this.isPreparing,
-            lastPrepareStatus: this.getLastPrepareTime(),
-        };
-    }
-
-    private getLastPrepareTime(): string {
-        const lastPrepare = Math.min(...this.pool.map(p => p.lastPreparedAt));
-        if (lastPrepare === 0) return 'Never';
-
-        const timeSince = Date.now() - lastPrepare;
-        const minutes = Math.floor(timeSince / 60000);
-        const seconds = Math.floor((timeSince % 60000) / 1000);
-
-        return `${minutes}m ${seconds}s ago`;
-    }
-
     // Manual trigger prepare (untuk testing)
     async triggerPrepare(): Promise<{ success: boolean; message: string }> {
         if (this.isPreparing) {
@@ -415,45 +338,5 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
 
         await this.prepareAllBrowsers();
         return { success: true, message: 'Prepare triggered successfully' };
-    }
-
-    async gotoWithCaptchaSolver(page: Page, url: string) {
-        try {
-            await page.goto(url, {
-                waitUntil: 'networkidle0',
-            });
-            const gotCaptcha = await page.evaluate(() => {
-                // @ts-ignore
-                return !!window?.WtmCaptcha;
-            });
-            if (gotCaptcha) {
-                console.log('got captcha, will solve it');
-                await page.waitForSelector('#rcpt_img', {
-                    visible: true,
-                });
-                const src = await page.$eval('#rcpt_img', (el: HTMLImageElement) => el.src);
-                // get text class="captcha_message"
-                const captchaMessage = await page.$eval('.captcha_message', (el: HTMLElement) => el.textContent);
-                console.log(src);
-                console.log(captchaMessage);
-                const answer = await this.captchaSolverService.solveCaptcha(src, captchaMessage || '');
-                console.log(answer);
-                // id="rcpt_answer"
-                await page.type('#rcpt_answer', answer || '');
-                // click id="cpt_confirm"
-                await page.click('#cpt_confirm');
-                // wait for networkidle2
-                await page.waitForNavigation({
-                    waitUntil: 'networkidle2',
-                });
-                // screenshot
-                await page.screenshot({
-                    path: 'screenshot.png',
-                    fullPage: true,
-                });
-            }
-        } catch (error) {
-            console.log(error);
-        }
     }
 }
