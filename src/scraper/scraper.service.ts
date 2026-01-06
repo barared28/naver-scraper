@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as puppeteer from 'puppeteer';
-import { BrowserPoolService } from 'src/browser/browser-pool.service';
-import { CaptchaSolverService } from 'src/captcha/captcha-solver.service';
+import { BrowserPoolService } from '../browser/browser-pool.service';
+import { CaptchaSolverService } from '../captcha/captcha-solver.service';
 
 @Injectable()
 export class ScraperService {

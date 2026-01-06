@@ -2,7 +2,7 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { newInjectedPage } from 'fingerprint-injector';
 import { FingerprintGenerator } from 'fingerprint-generator';
 import { BrowserPoolService } from './browser-pool.service';
-import { CaptchaSolverService } from 'src/captcha/captcha-solver.service';
+import { CaptchaSolverService } from '../captcha/captcha-solver.service';
 
 const koreanSearchKeywords = [
     '아이폰', // iPhone
