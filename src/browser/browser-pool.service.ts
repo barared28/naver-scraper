@@ -1,96 +1,65 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { newInjectedPage } from 'fingerprint-injector';
-import { FingerprintGenerator } from 'node_modules/fingerprint-generator/fingerprint-generator';
-import puppeteer from "puppeteer-extra"
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import { Browser } from "puppeteer";
-import { CaptchaSolverService } from './captcha-solver.service';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { Browser } from 'puppeteer';
+import { PooledBrowser, WaitingRequest } from './browser.types';
 
 puppeteer.use(StealthPlugin());
-
-interface PooledBrowser {
-    browser: Browser;
-    inUse: boolean;
-    lastUsedAt: number;
-    lastPreparedAt: number;
-    isPrepared: boolean;
-    proxy: string;
-}
-
-interface WaitingRequest {
-    resolve: (browser: Browser) => void;
-    reject: (error: Error) => void;
-    timestamp: number;
-    timeout: NodeJS.Timeout;
-}
-
-const generator = new FingerprintGenerator({
-    devices: ['desktop'],
-    operatingSystems: ['macos'],
-    browsers: ['chrome'],
-    locales: ['ko-KR'],
-    screen: {
-        maxHeight: 1080,
-        maxWidth: 1920,
-        minHeight: 1080,
-        minWidth: 1920,
-    },
-    httpVersion: '2',
-});
-const fingerprint = generator.getFingerprint();
 
 @Injectable()
 export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
     private pool: PooledBrowser[] = [];
-    private maxBrowsers: number;
+    private maxBrowsers: number;    
     private waitingQueue: WaitingRequest[] = [];
-    private maxWaitTime: number = 30000; // 30 detik
+    private maxWaitTime: number = 30000;
     private checkInterval: NodeJS.Timeout;
-    private prepareInterval: NodeJS.Timeout;
-    private prepareIntervalTime: number = 5 * 60 * 1000; // 5 menit
-    private isPreparing: boolean = false;
     private proxies: string[] = [];
     private BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '';
     private BROWSERLESS_URL = process.env.BROWSERLESS_URL || 'localhost:3000';
+    private logger = new Logger(BrowserPoolService.name);
 
-    constructor(private readonly captchaSolverService: CaptchaSolverService) {
+    constructor() {
         this.maxWaitTime = parseInt(process.env.MAX_WAIT_TIME || '30000', 10);
-        this.prepareIntervalTime = parseInt(process.env.PREPARE_INTERVAL || '300000', 10);
         this.proxies = JSON.parse(process.env.PROXIES || '[]');
-        this.maxBrowsers = Math.min(parseInt(process.env.MAX_THREAD || '5', 10), this.proxies.length);
+        this.maxBrowsers = Math.min(
+            parseInt(process.env.MAX_THREAD || '5', 10),
+            this.proxies.length,
+        );
     }
 
     async onModuleInit() {
-        console.log(`Initializing browser pool with ${this.maxBrowsers} browsers...`);
+        this.logger.log(`Initializing browser pool with ${this.maxBrowsers} browsers...`);
 
         for (const proxy of this.proxies) {
             const i = this.proxies.indexOf(proxy);
-            if (i >= this.maxBrowsers) {
-                continue;
-            }
-            console.log(`Using proxy: ${proxy}`);
+            if (i >= this.maxBrowsers) break;
+
+            this.logger.log(`Using proxy: ${proxy}`);
+
             try {
                 const [ip, port] = proxy.split(':');
                 const launchArgs = {
                     headless: false,
                     args: [
                         `--proxy-server=http://${ip}:${port}`,
-                        `--user-data-dir=~/u/naver-${Buffer.from(proxy).toString('base64')}`
+                        `--user-data-dir=~/u/naver-${Buffer.from(proxy).toString('base64')}`,
                     ],
-                    // args: [`--user-data-dir=~/u/naver-${i}`],
                     defaultViewport: null,
                 };
+
                 const queryParams = new URLSearchParams({
                     token: this.BROWSERLESS_TOKEN,
-                    timeout: "6000000",
-                    launch: JSON.stringify(launchArgs)
+                    timeout: '6000000',
+                    launch: JSON.stringify(launchArgs),
                 }).toString();
+
                 const browserWSEndpoint = `ws://${this.BROWSERLESS_URL}?${queryParams}`;
                 const browser = await puppeteer.connect({
                     browserWSEndpoint,
                     defaultViewport: null,
                     acceptInsecureCerts: true,
                 });
+
                 this.pool.push({
                     browser,
                     inUse: false,
@@ -99,149 +68,40 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
                     isPrepared: false,
                     proxy,
                 });
+
+                this.logger.log(`Browser ${i + 1} connected`);
             } catch (error) {
-                console.error(`Failed to launch browser ${i + 1}:`, error);
+                this.logger.error(`Failed to launch browser ${i + 1}:`, error);
             }
         }
 
-        console.log(`Browser pool initialized with ${this.pool.length} browsers`);
+        this.logger.log(`Pool initialized with ${this.pool.length} browsers`);
 
-        // Prepare semua browser saat startup
-        await this.prepareAllBrowsers();
-
-        // Periodic check untuk cleanup timeout requests
+        // Cleanup timeout requests every 1 second
         this.checkInterval = setInterval(() => this.processWaitingQueue(), 1000);
-
-        // Periodic prepare setiap 5 menit
-        this.prepareInterval = setInterval(
-            () => this.prepareAllBrowsers(),
-            this.prepareIntervalTime,
-        );
-
-        console.log(`Prepare interval set to ${this.prepareIntervalTime}ms (${this.prepareIntervalTime / 60000} minutes)`);
     }
 
     async onModuleDestroy() {
-        if (this.checkInterval) {
-            clearInterval(this.checkInterval);
-        }
-        if (this.prepareInterval) {
-            clearInterval(this.prepareInterval);
-        }
-        console.log('Closing all browsers...');
-        await Promise.all(this.pool.map(p => p.browser.close()));
-        console.log('All browsers closed');
+        if (this.checkInterval) clearInterval(this.checkInterval);
+
+        this.logger.log('Closing all browsers...');
+        await Promise.all(this.pool.map(p => p.browser.close().catch(e => this.logger.error(e))));
+        this.logger.log('All browsers closed');
     }
 
-    // Method untuk prepare browser
-    private async prepareBrowser(pooledBrowser: PooledBrowser): Promise<boolean> {
-        try {
-            console.log(`[PREPARE] Preparing browser...`);
-
-            const oldPages = await pooledBrowser.browser.pages();
-
-            const page = await newInjectedPage(pooledBrowser.browser, {
-                fingerprint,
-            });
-            // set viewport
-            await page.setViewport({
-                width: 1920,
-                height: 1080,
-            });
-
-            await Promise.all(oldPages.map(page => page.close()));
-
-            const [ip, port, username, password] = pooledBrowser.proxy.split(':');
-
-            // authenticate with proxy
-            await page.authenticate({
-                username,
-                password,
-            });
-
-            // check ip https://api64.ipify.org?format=json use evaluate
-            const ipResult = await page.evaluate(() => fetch('https://api64.ipify.org?format=json').then(res => res.json()));
-            console.log(`[PREPARE] Check IP: ${ipResult.ip}`);
-
-            console.log(`[PREPARE] Navigating to https://google.com...`);
-            await this.captchaSolverService.gotoWithCaptchaSolver(page, "https://google.com");
-            console.log(`[PREPARE] Navigating to https://naver.com...`);
-            await this.captchaSolverService.gotoWithCaptchaSolver(page, "https://naver.com");
-            console.log(`[PREPARE] Navigating to https://shopping.naver.com/ns/home...`);
-            await this.captchaSolverService.gotoWithCaptchaSolver(page, "https://shopping.naver.com/ns/home", 'networkidle2');
-
-            // select random a href="https://smartstore.naver.com/*
-            const smartstoreLinks = await page.$$('a[href^="https://smartstore.naver.com"]');
-            console.log(`[PREPARE] Found ${smartstoreLinks.length} smartstore links`);
-            const randomLink = smartstoreLinks[Math.floor(Math.random() * smartstoreLinks.length)];
-            // scroll to random link
-            await randomLink.scrollIntoView()
-
-            // screenshot
-            await page.screenshot({
-                path: `naver-${new Date().toISOString().replace(/:/g, '-')}.png`,
-                fullPage: true,
-            })
-
-            pooledBrowser.isPrepared = true;
-            pooledBrowser.lastPreparedAt = Date.now();
-
-            console.log(`[PREPARE] Browser prepared successfully`);
-            return true;
-        } catch (error) {
-            console.error(`[PREPARE] Failed to prepare browser:`, error.message);
-            pooledBrowser.isPrepared = false;
-            return false;
-        }
-    }
-
-    // Prepare semua browser di pool
-    private async prepareAllBrowsers(): Promise<void> {
-        if (this.isPreparing) {
-            console.log('[PREPARE] Already preparing, skipping...');
-            return;
-        }
-
-        this.isPreparing = true;
-        console.log(`[PREPARE] Starting prepare cycle for all ${this.pool.length} browsers...`);
-
-        const results = await Promise.allSettled(
-            this.pool.map(pb => this.prepareBrowser(pb))
-        );
-
-        const successful = results.filter(r => r.status === 'fulfilled' && r.value).length;
-        console.log(`[PREPARE] Prepare cycle complete: ${successful}/${this.pool.length} browsers prepared`);
-
-        this.isPreparing = false;
-    }
-
-    // Prepare browser saat sedang tidak dipakai (background)
-    private async prepareIfNeeded(pooledBrowser: PooledBrowser): Promise<void> {
-        const now = Date.now();
-        const timeSinceLastPrepare = now - pooledBrowser.lastPreparedAt;
-
-        // Jika belum pernah di-prepare atau sudah > 5 menit, prepare sekarang
-        if (!pooledBrowser.isPrepared || timeSinceLastPrepare > this.prepareIntervalTime) {
-            await this.prepareBrowser(pooledBrowser);
-        }
-    }
-
-    // Opsi 1: TUNGGU SAMPAI DAPAT
     async getBrowser(): Promise<Browser> {
-        const availableBrowser = this.pool.sort((a, b) => a.lastUsedAt - b.lastUsedAt).find(p => !p.inUse);
+        const availableBrowser = this.pool
+            .sort((a, b) => a.lastUsedAt - b.lastUsedAt)
+            .find(p => !p.inUse);
 
         if (availableBrowser) {
-            // log which proxy
-            console.log(`[GET] Using browser with proxy: ${availableBrowser.proxy}`);
-            // Ensure browser is prepared before returning
-            await this.prepareIfNeeded(availableBrowser);
-
+            this.logger.log(`Using browser with proxy: ${availableBrowser.proxy}`);
             availableBrowser.inUse = true;
             availableBrowser.lastUsedAt = Date.now();
             return availableBrowser.browser;
         }
 
-        // Tunggu sampai ada browser yang available
+        // wait for browser to be available
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 const index = this.waitingQueue.findIndex(w => w.reject === reject);
@@ -258,18 +118,17 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
                 timeout,
             });
 
-            console.log(`Request waiting for browser. Queue length: ${this.waitingQueue.length}`);
+            this.logger.log(`Request waiting for browser. Queue: ${this.waitingQueue.length}`);
         });
     }
 
-    // Opsi 2: TUNGGU DENGAN CUSTOM TIMEOUT
     async getBrowserWithTimeout(timeoutMs: number): Promise<Browser> {
-        const availableBrowser = this.pool.find(p => !p.inUse);
+        const availableBrowser = this.pool
+            .sort((a, b) => a.lastUsedAt - b.lastUsedAt)
+            .find(p => !p.inUse);
 
         if (availableBrowser) {
-            // Ensure browser is prepared before returning
-            await this.prepareIfNeeded(availableBrowser);
-
+            this.logger.log(`Using browser with proxy: ${availableBrowser.proxy}`);
             availableBrowser.inUse = true;
             availableBrowser.lastUsedAt = Date.now();
             return availableBrowser.browser;
@@ -297,46 +156,62 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
         const pooledBrowser = this.pool.find(p => p.browser === browser);
 
         if (!pooledBrowser) {
-            console.warn('Tried to release unknown browser');
+            this.logger.warn('Tried to release unknown browser');
             return;
         }
 
-        // Jika ada yang menunggu, berikan browser ke mereka
+        // if there are waiting requests, allocate browser to them
         if (this.waitingQueue.length > 0) {
             const waiter = this.waitingQueue.shift();
             clearTimeout(waiter!.timeout);
             waiter!.resolve(browser);
-            console.log(`Browser allocated to waiting request. Queue: ${this.waitingQueue.length}`);
+            this.logger.log(`Browser allocated to waiting request. Queue: ${this.waitingQueue.length}`);
         } else {
-            // Jika tidak ada yang menunggu, mark sebagai tidak dipakai
             pooledBrowser.inUse = false;
             pooledBrowser.lastUsedAt = Date.now();
+            this.logger.log('Browser released');
         }
     }
 
     private processWaitingQueue(): void {
         const now = Date.now();
-        const expired = this.waitingQueue.filter(
-            w => (now - w.timestamp) > this.maxWaitTime
-        );
+        const expired = this.waitingQueue.filter(w => now - w.timestamp > this.maxWaitTime);
 
         expired.forEach(w => {
             clearTimeout(w.timeout);
             w.reject(new Error(`Timeout waiting for browser (${this.maxWaitTime}ms)`));
         });
 
-        this.waitingQueue = this.waitingQueue.filter(
-            w => (now - w.timestamp) <= this.maxWaitTime
-        );
+        this.waitingQueue = this.waitingQueue.filter(w => now - w.timestamp <= this.maxWaitTime);
     }
 
-    // Manual trigger prepare (untuk testing)
-    async triggerPrepare(): Promise<{ success: boolean; message: string }> {
-        if (this.isPreparing) {
-            return { success: false, message: 'Already preparing' };
-        }
+    // for browser warmer service
+    getPooledBrowsers(): PooledBrowser[] {
+        return this.pool;
+    }
 
-        await this.prepareAllBrowsers();
-        return { success: true, message: 'Prepare triggered successfully' };
+    updateBrowserPrepared(browser: Browser, isPrepared: boolean): void {
+        const pooledBrowser = this.pool.find(p => p.browser === browser);
+        if (pooledBrowser) {
+            pooledBrowser.isPrepared = isPrepared;
+            pooledBrowser.lastPreparedAt = Date.now();
+        }
+    }
+
+    isPoolHealthy(): { healthy: boolean; idle: number; total: number } {
+        const idle = this.pool.filter(p => !p.inUse).length;
+        return {
+            healthy: this.pool.length === this.maxBrowsers,
+            idle,
+            total: this.pool.length,
+        };
+    }
+
+    notifyWarmupComplete(): void {
+        this.logger.log('Warmup complete, pool ready for requests');
+    }
+
+    getExpectedBrowserCount(): number {
+        return this.maxBrowsers;
     }
 }

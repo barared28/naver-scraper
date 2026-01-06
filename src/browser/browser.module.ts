@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
-import { BrowserService } from './browser.service';
-import { CaptchaSolverService } from './captcha-solver.service';
 import { BrowserPoolService } from './browser-pool.service';
+import { BrowserWarmerService } from './browser-warmer.service';
+import { CaptchaModule } from '../captcha/captcha.module';
 
 @Module({
-    providers: [BrowserService, CaptchaSolverService, BrowserPoolService],
-    exports: [BrowserService, CaptchaSolverService, BrowserPoolService],
+    imports: [CaptchaModule],
+    providers: [BrowserPoolService, BrowserWarmerService],
+    exports: [BrowserPoolService, BrowserWarmerService],
 })
 export class BrowserModule {}

@@ -1,11 +1,9 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { ScraperModule } from './scraper/scraper.module';
-import { BrowserService } from './browser/browser.service';
-import { CaptchaSolverService } from './browser/captcha-solver.service';
-import { BrowserPoolService } from './browser/browser-pool.service';
 import { ConfigModule } from '@nestjs/config';
 import { BrowserModule } from './browser/browser.module';
+import { CaptchaModule } from './captcha/captcha.module';
 
 @Module({
   imports: [
@@ -14,7 +12,9 @@ import { BrowserModule } from './browser/browser.module';
       isGlobal: true,
     }),
     ScraperModule,
-    BrowserModule],
+    BrowserModule,
+    CaptchaModule
+  ],
   controllers: [AppController],
 })
 export class AppModule { }
