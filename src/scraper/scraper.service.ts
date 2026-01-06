@@ -13,7 +13,7 @@ export class ScraperService {
     constructor(
         private readonly browserPoolService: BrowserPoolService,
         private readonly captchaSolverService: CaptchaSolverService,
-    ) {}
+    ) { }
 
     async scrape(url: string): Promise<any> {
         let browser: puppeteer.Browser | null = null;
@@ -37,9 +37,9 @@ export class ScraperService {
 
                 // ignore image & style request
                 if (type === 'image' || type === 'stylesheet') {
-                    req.abort().catch(() => {});
+                    req.abort().catch(() => { });
                 } else {
-                    req.continue().catch(() => {});
+                    req.continue().catch(() => { });
                 }
             };
 
@@ -109,22 +109,64 @@ export class ScraperService {
         } finally {
             // Cleanup
             if (browser) {
-                try {
-                    const pages = await browser.pages();
-                    if (pages.length > 0) {
-                        const currentPage = pages[0];
-                        await currentPage.setRequestInterception(false).catch(() => {});
+                this.browserPoolService.cleanup(browser);
+            }
+        }
+    }
 
-                        // Remove all listeners
-                        currentPage.removeAllListeners('request');
-                        currentPage.removeAllListeners('response');
-                    }
-                } catch (error) {
-                    this.logger.error('Cleanup error:', error.message);
+
+    async scrapeProducts(keyword: string) {
+        let browser: puppeteer.Browser | null = null;
+        const url = `https://search.shopping.naver.com/ns/search?query=${keyword}&queryType=ac`
+        try {
+            // Get browser from pool
+            browser = await this.browserPoolService.getBrowser();
+            const pages = await browser.pages();
+
+            if (pages.length === 0) {
+                throw new Error('Browser has no pages');
+            }
+
+            const currentPage = pages[0];
+
+            // Setup request interception handler
+            const listenRequest = (req: puppeteer.HTTPRequest) => {
+                const type = req.resourceType();
+
+                // ignore image & style request
+                if (type === 'image' || type === 'stylesheet') {
+                    req.abort().catch(() => { });
+                } else {
+                    req.continue().catch(() => { });
                 }
+            };
 
-                // Release browser back to pool
-                this.browserPoolService.releaseBrowser(browser);
+            // Setup request interception
+            await currentPage.setRequestInterception(true);
+            currentPage.on('request', listenRequest);
+
+            await this.captchaSolverService.gotoWithCaptchaSolver(
+                currentPage,
+                url,
+                'networkidle2',
+            );
+
+            const productUrls = await currentPage
+                .$$eval('a[href*="smartstore.naver.com"][href*="/products/"]', (links: any) => {
+                    return links.map((link: any) => link.href?.split('?')[0] || '');
+                })
+                .catch(() => []);
+
+            this.logger.log(`Found ${productUrls.length} product URLs`);
+
+            return productUrls || [];
+        } catch (error) {
+            this.logger.error('ScrapeProducts error:', error.message);
+            throw error;
+        } finally {
+            // Cleanup
+            if (browser) {
+                this.browserPoolService.cleanup(browser);
             }
         }
     }

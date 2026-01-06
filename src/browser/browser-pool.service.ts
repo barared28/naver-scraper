@@ -9,7 +9,7 @@ puppeteer.use(StealthPlugin());
 @Injectable()
 export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
     private pool: PooledBrowser[] = [];
-    private maxBrowsers: number;    
+    private maxBrowsers: number;
     private waitingQueue: WaitingRequest[] = [];
     private maxWaitTime: number = 30000;
     private checkInterval: NodeJS.Timeout;
@@ -213,5 +213,24 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
 
     getExpectedBrowserCount(): number {
         return this.maxBrowsers;
+    }
+
+    async cleanup(browser: Browser) {
+        try {
+            const pages = await browser.pages();
+            if (pages.length > 0) {
+                const currentPage = pages[0];
+                await currentPage.setRequestInterception(false).catch(() => { });
+
+                // Remove all listeners
+                currentPage.removeAllListeners('request');
+                currentPage.removeAllListeners('response');
+            }
+        } catch (error) {
+            this.logger.error('Cleanup error:', error.message);
+        }
+
+        // Release browser back to pool
+        this.releaseBrowser(browser);
     }
 }
