@@ -2,50 +2,18 @@ import path from "path";
 import fs from "fs";
 import axios from "axios";
 import env from "dotenv";
+import keywordJson from './keyword.json';
 
 env.config();
 
 const PORT = process.env.PORT ?? 3000;
 
-const koreanSearchKeywords = [
-    '아이폰', // iPhone
-    '유니클로', // Uniqlo
-    '나이키', // Nike
-    '아디다스', // Adidas
-    '루이비통', // Louis Vuitton
-    '구찌', // Gucci
-    '삼성', // Samsung
-    'LG', // LG
-    '다이슨', // Dyson
-    '스타벅스', // Starbucks
-    '네스프레소', // Nespresso
-    '다이어리', // Diary
-    '향수', // Perfume
-    '립스틱', // Lipstick
-    '마스크', // Mask
-    '선크림', // Sunscreen
-    '비타민', // Vitamin
-    '헤드폰', // Headphone
-    '스피커', // Speaker
-    '휴대폰케이스', // Phone Case
-    '애플워치', // Apple Watch
-    '에어팟', // AirPods
-    '아이패드', // iPad
-    '맥북', // MacBook
-    '비비크림', // BB Cream
-    '토너', // Toner
-    '에센스', // Essence
-    '샴푸', // Shampoo
-    '렌즈', // Contact Lens
-    '캔들', // Candle
-];
-
 // ============== CONFIGURATION ==============
 const CONFIG = {
     FOLDER_RESULT: path.join(__dirname, 'result'),
-    KEYWORDS: koreanSearchKeywords,
+    KEYWORDS: keywordJson.keywords,
     MAX_RESULT: 1000,
-    BATCH_SIZE: 4,  // Number of concurrent requests
+    BATCH_SIZE: 3,  // Number of concurrent requests
     SEARCH_API_URL: `http://localhost:${PORT}/naver/search`,
     PRODUCT_API_URL: `http://localhost:${PORT}/naver/`,
 };
@@ -93,27 +61,44 @@ async function processBatch<T>(
 
         logger.log(`Starting search with ${CONFIG.KEYWORDS.length} keywords...`);
 
-        // Phase 1: Collect URLs from keywords
-        for (const keyword of CONFIG.KEYWORDS) {
-            try {
-                const res = await axios.get(CONFIG.SEARCH_API_URL, {
-                    params: { keyword },
-                });
-                
-                if (res.data?.data?.length > 0) {
-                    logger.log(`Found ${res.data.data.length} items for "${keyword}" (total: ${result.length})`);
-                    const newItems = res.data.data.filter((item: string) => !result.includes(item));
-                    result.push(...newItems);
-                }
+        const batches: string[][] = [];
 
-                if (result.length >= CONFIG.MAX_RESULT) {
-                    result = result.slice(0, CONFIG.MAX_RESULT);
-                    break;
+        for (let i = 0; i < CONFIG.KEYWORDS.length; i += CONFIG.BATCH_SIZE) {
+            batches.push(CONFIG.KEYWORDS.slice(i, i + CONFIG.BATCH_SIZE));
+        }
+
+        for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+            const batch = batches[batchIndex];
+
+            const promises = batch.map((keyword) =>
+                axios.get(CONFIG.SEARCH_API_URL, {
+                    params: { keyword },
+                }).catch((err) => {
+                    logger.error(`Failed to search "${keyword}"`, err);
+                    return null;
+                })
+            );
+
+            const responses = await Promise.all(promises);
+
+            responses.forEach((res) => {
+                if (res?.data?.data?.length > 0) {
+                    logger.log(`Found ${res?.data?.data?.length} items (total: ${result.length})`);
+                    const newItems = res?.data?.data?.filter((item: string) => !result.includes(item));
+                    result.push(...newItems || []);
                 }
-            } catch (err) {
-                logger.error(`Failed to search "${keyword}"`, err);
+            });
+
+            if (result.length >= CONFIG.MAX_RESULT) {
+                result = result.slice(0, CONFIG.MAX_RESULT);
+                break;
+            }
+
+            if (batchIndex < batches.length - 1) {
+                logger.log(`Batch ${batchIndex + 1} Done`);
             }
         }
+
 
         logger.success(`Collected ${result.length} product URLs`);
         fs.writeFileSync(
