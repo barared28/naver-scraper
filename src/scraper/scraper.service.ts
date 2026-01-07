@@ -151,6 +151,8 @@ export class ScraperService {
                 'networkidle2',
             );
 
+            await currentPage.waitForSelector('a[href*="smartstore.naver.com"][href*="/products/"]')?.catch(() => {});
+
             const productUrls = await currentPage
                 .$$eval('a[href*="smartstore.naver.com"][href*="/products/"]', (links: any) => {
                     return links.map((link: any) => link.href?.split('?')[0] || '');

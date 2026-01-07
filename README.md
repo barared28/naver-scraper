@@ -70,7 +70,6 @@ See `.env.example`. Key variables:
 
 ## Running the Service
 
-- Health check: `GET /ping` → `pong` (see `src/app.controller.ts:5-8`).
 - Scrape product: `GET /naver?productUrl=<PRODUCT_URL>`
   - Returns `product` and `benefit` payloads captured from XHR API calls on the product page.
 - Search products: `GET /naver/search?keyword=<KEYWORD>`

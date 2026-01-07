@@ -1,15 +1,53 @@
 import path from "path";
 import fs from "fs";
 import axios from "axios";
+import env from "dotenv";
+
+env.config();
+
+const PORT = process.env.PORT ?? 3000;
+
+const koreanSearchKeywords = [
+    '아이폰', // iPhone
+    '유니클로', // Uniqlo
+    '나이키', // Nike
+    '아디다스', // Adidas
+    '루이비통', // Louis Vuitton
+    '구찌', // Gucci
+    '삼성', // Samsung
+    'LG', // LG
+    '다이슨', // Dyson
+    '스타벅스', // Starbucks
+    '네스프레소', // Nespresso
+    '다이어리', // Diary
+    '향수', // Perfume
+    '립스틱', // Lipstick
+    '마스크', // Mask
+    '선크림', // Sunscreen
+    '비타민', // Vitamin
+    '헤드폰', // Headphone
+    '스피커', // Speaker
+    '휴대폰케이스', // Phone Case
+    '애플워치', // Apple Watch
+    '에어팟', // AirPods
+    '아이패드', // iPad
+    '맥북', // MacBook
+    '비비크림', // BB Cream
+    '토너', // Toner
+    '에센스', // Essence
+    '샴푸', // Shampoo
+    '렌즈', // Contact Lens
+    '캔들', // Candle
+];
 
 // ============== CONFIGURATION ==============
 const CONFIG = {
     FOLDER_RESULT: path.join(__dirname, 'result'),
-    KEYWORDS: ['아이폰', '갤럭시', '삼성'],
-    MAX_RESULT: 100,
-    BATCH_SIZE: 2,  // Number of concurrent requests
-    SEARCH_API_URL: 'http://localhost:3001/naver/search',
-    PRODUCT_API_URL: 'http://localhost:3001/naver/',
+    KEYWORDS: koreanSearchKeywords,
+    MAX_RESULT: 1000,
+    BATCH_SIZE: 4,  // Number of concurrent requests
+    SEARCH_API_URL: `http://localhost:${PORT}/naver/search`,
+    PRODUCT_API_URL: `http://localhost:${PORT}/naver/`,
 };
 
 // ============== SETUP ==============
