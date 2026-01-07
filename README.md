@@ -1,98 +1,172 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Naver Scraper
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Naver Smartstore scraper built with NestJS + Puppeteer, featuring Browserless, proxies, fingerprinting, captcha solver, a browser pool, and a warm-up mechanism. Designed for stable scraping and reduced detection.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Architecture Overview
 
-## Description
+- `Browserless`: Connect Puppeteer to a remote Chromium via WebSocket for stability and isolation. See `src/browser/browser-pool.service.ts:52-58`.
+- `Proxy`: Each browser instance uses a distinct proxy via `--proxy-server` and per-page authentication. See `src/browser/browser-pool.service.ts:36-43` and `src/browser/browser-warmer.service.ts:249-255`.
+- `Fingerprint`: Uses `fingerprint-generator` + `fingerprint-injector` to create pages with realistic fingerprints (device, OS, locale, screen). See `src/browser/browser-warmer.service.ts:235-245`.
+- `Browser Pool`: Manages a pool of browsers connected to Browserless; request queue, timeouts, release, and cleanup. See `src/browser/browser-pool.service.ts`.
+- `Captcha Solver`: Solves Naver captcha via Anthropic (Claude) using the captcha image and prompt. See `src/captcha/captcha-solver.service.ts`.
+- `Warm Up`: Sequential navigation across Google/Naver/Search/Product to prime cookies/session and reduce captcha likelihood. See `src/browser/browser-warmer.service.ts`.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Prerequisites
 
-## Project setup
+- Node.js 18+ and `yarn`
+- Docker (to run Browserless)
+- Tokens/keys:
+  - `BROWSERLESS_TOKEN`
+  - `ANTHROPIC_API_KEY` (Claude)
+- Proxy list in `ip:port:username:password` format (JSON array)
+
+## Quick Setup (Local Dev + Browserless Container)
+
+1. Install dependencies:
+   ```bash
+   yarn install
+   ```
+2. Copy `.env.example` to `.env` and fill in values:
+   - `PORT=3000`
+   - `BROWSERLESS_TOKEN=...`
+   - `ANTHROPIC_API_KEY=...`
+   - `PROXIES=["ip:port:username:password", "..."]`
+   - Set `MAX_THREAD` to the number of proxies.
+   - `BROWSERLESS_URL` when running Browserless via container:
+     - If NestJS runs on host: `localhost:3001`
+     - If NestJS runs inside the same Docker network: `browserless:3000`
+
+3. Run Browserless (Chromium) via Docker:
+   ```bash
+   docker run -d \
+     -p 3001:3000 \
+     -e TOKEN=$BROWSERLESS_TOKEN \
+     --name browserless \
+     ghcr.io/browserless/chromium
+   ```
+
+4. Run NestJS app:
+   ```bash
+   yarn start:dev
+   # or production
+   yarn build && yarn start:prod
+   ```
+
+Note: The repo includes `compose.yml` for orchestration, but no `Dockerfile` for the NestJS service. You can run NestJS locally as above, or add your own Dockerfile for full docker-compose usage.
+
+## `.env` Configuration
+
+See `.env.example`. Key variables:
+
+- `PORT`: NestJS HTTP port (default 3000). See `src/main.ts:5-7`.
+- `BROWSERLESS_URL`: Host:port for Browserless WebSocket, no scheme (`ws://` is added programmatically). See `src/browser/browser-pool.service.ts:52-55`.
+- `BROWSERLESS_TOKEN`: Browserless access token. See `src/browser/browser-pool.service.ts:46-51`.
+- `MAX_THREAD`: Max browsers in the pool; capped by proxy count. See `src/browser/browser-pool.service.ts:20-23`.
+- `MAX_WAIT_TIME`: Max waiting time in the request queue. See `src/browser/browser-pool.service.ts:10,100-109`.
+- `PREPARE_INTERVAL`: Interval between periodic warm-ups. See `src/browser/browser-warmer.service.ts:54,62-64`.
+- `IDLE_THRESHOLD`: Idle threshold before a browser is scheduled for warm-up. See `src/browser/browser-warmer.service.ts:55,62-64`.
+- `ANTHROPIC_API_KEY`: Captcha solver API key. See `src/captcha/captcha-solver.service.ts:11-15`.
+- `PROXIES`: JSON array of `ip:port:username:password`. See `src/browser/browser-pool.service.ts:19,36-43`.
+
+## Running the Service
+
+- Health check: `GET /ping` → `pong` (see `src/app.controller.ts:5-8`).
+- Scrape product: `GET /naver?productUrl=<PRODUCT_URL>`
+  - Returns `product` and `benefit` payloads captured from XHR API calls on the product page.
+- Search products: `GET /naver/search?keyword=<KEYWORD>`
+  - Returns a list of Smartstore product URLs from search results.
+
+Examples:
 
 ```bash
-$ yarn install
+curl "http://localhost:3000/naver?productUrl=https://smartstore.naver.com/.../products/12345?withWindow=false"
+
+curl "http://localhost:3000/naver/search?keyword=아이폰"
 ```
 
-## Compile and run the project
+## Infrastructure Details
 
-```bash
-# development
-$ yarn run start
+### Browserless
 
-# watch mode
-$ yarn run start:dev
+- Connection via `puppeteer.connect` with a `browserWSEndpoint` including `token` and `launch` args. See `src/browser/browser-pool.service.ts:52-58`.
+- Launch args set the proxy and a distinct `user-data-dir` per proxy to isolate profiles. See `src/browser/browser-pool.service.ts:36-45`.
 
-# production mode
-$ yarn run start:prod
-```
+### Fingerprint
 
-## Run tests
+- `FingerprintGenerator` configured to `desktop/macos/chrome/ko-KR` with 1920×1080 screen. See `src/browser/browser-warmer.service.ts:35-47`.
+- `newInjectedPage` creates a page with the fingerprint so headers, navigator, screen, etc., look natural. See `src/browser/browser-warmer.service.ts:237-245`.
 
-```bash
-# unit tests
-$ yarn run test
+### Proxy
 
-# e2e tests
-$ yarn run test:e2e
+- `.env` format: `PROXIES=["ip:port:username:password", ...]`.
+- Proxy is set via Chromium arg `--proxy-server=http://ip:port`. See `src/browser/browser-pool.service.ts:36-43`.
+- Page-level authentication via `page.authenticate({username, password})`. See `src/browser/browser-warmer.service.ts:249-255`.
 
-# test coverage
-$ yarn run test:cov
-```
+### Browser Pool
 
-## Deployment
+- Pool size equals `MAX_THREAD` or proxy count (whichever is smaller). See `src/browser/browser-pool.service.ts:20-23`.
+- FIFO allocation with `inUse`, `lastUsedAt`, and a waiting queue with timeout. See `src/browser/browser-pool.service.ts:88-119,151-170,172-182`.
+- `cleanup` disables interception and removes listeners before releasing the browser back to the pool. See `src/browser/browser-pool.service.ts:214-231`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+### Captcha Solver
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+- Detects Naver captcha (`window.WtmCaptcha`), grabs `#rcpt_img` and message. See `src/captcha/captcha-solver.service.ts:62-85`.
+- Sends to Anthropic (Claude Sonnet 4.5) and uses the plain text answer. See `src/captcha/captcha-solver.service.ts:17-46`.
+- Fills the answer and proceeds with navigation. See `src/captcha/captcha-solver.service.ts:88-121`.
 
-```bash
-$ yarn install -g @nestjs/mau
-$ mau deploy
-```
+### Warm Up Mechanism
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+- Startup: waits for all browsers to connect, then warms all of them initially. See `src/browser/browser-warmer.service.ts:81-111,145-156`.
+- Periodic: every `PREPARE_INTERVAL`, selects browsers idle beyond `IDLE_THRESHOLD` for warming. See `src/browser/browser-warmer.service.ts:162-189`.
+- Warm-up steps: set viewport, check IP, navigate Google → Naver → Shopping → Random search → Random product. See `src/browser/browser-warmer.service.ts:241-315`.
+- On success, mark browser `isPrepared` and reset `lastUsedAt`. See `src/browser/browser-warmer.service.ts:319-325`.
 
-## Resources
+## Scraping Workflow
 
-Check out a few resources that may come in handy when working with NestJS:
+1. Acquire a browser from the pool (`getBrowser`). See `src/scraper/scraper.service.ts:23`.
+2. Enable interception to skip heavy resources and listen for product/benefit API responses. See `src/scraper/scraper.service.ts:35-75`.
+3. Navigate with captcha solver (`gotoWithCaptchaSolver`). See `src/scraper/scraper.service.ts:79-83`.
+4. Wait up to 90s for both responses and return data. See `src/scraper/scraper.service.ts:85-105`.
+5. Cleanup and release the browser back to the pool. See `src/scraper/scraper.service.ts:110-114` + `src/browser/browser-pool.service.ts:214-231`.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+## Troubleshooting
 
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+- `BROWSERLESS_URL` with Docker Compose:
+  - Within a shared Docker network: `browserless:3000` (container internal port).
+  - From host: `localhost:3001` (published port).
+- Ensure `PROXIES` is valid JSON (double quotes) and credentials are correct.
+- `ANTHROPIC_API_KEY` must be set; without it, captcha solving won’t work.
+- If frequent captchas occur, increase `PREPARE_INTERVAL`, adjust `IDLE_THRESHOLD`, or diversify fingerprints.
+- If browser acquisition times out, increase `MAX_THREAD` or `MAX_WAIT_TIME`.
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+This code is private (UNLICENSED). Do not publish any tokens or credentials.
+
+## Testing with `yarn test`
+
+- The `test` script runs `ts-node test/test.ts` as defined in `package.json`.
+- Ensure the NestJS server is running and accessible from the test script.
+- Default test targets `http://localhost:3001` for API calls. Align your server port accordingly.
+
+Steps:
+
+- Start Browserless:
+  - `docker run -d -p 3001:3000 -e TOKEN=$BROWSERLESS_TOKEN --name browserless ghcr.io/browserless/chromium`
+- Start the NestJS app:
+  - `yarn start:dev`
+  - or `yarn build && yarn start:prod`
+- Run tests:
+  - `yarn test`
+
+What the test does (`test/test.ts`):
+
+- Collects Smartstore product URLs by calling `GET /naver/search?keyword=<keyword>` for keywords.
+- Saves the list to `test/result/urls.json`.
+- Fetches each product detail via `GET /naver?productUrl=<url>` with a batch concurrency of `BATCH_SIZE`.
+- Writes each product response to `test/result/<productId>.json` and logs success/failure and average response time.
+
+Port alignment:
+
+- App default port is `3000` (`src/main.ts:5-7`). The test script targets `3001`.
+- Either set `.env` `PORT=3001` for the app, or update `SEARCH_API_URL` and `PRODUCT_API_URL` in `test/test.ts` to `http://localhost:3000/...`.
