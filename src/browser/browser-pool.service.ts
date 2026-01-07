@@ -1,10 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import { Browser } from 'puppeteer';
+import puppeteer, { Browser } from 'puppeteer';
 import { PooledBrowser, WaitingRequest } from './browser.types';
-
-puppeteer.use(StealthPlugin());
 
 @Injectable()
 export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {

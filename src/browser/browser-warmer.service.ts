@@ -131,9 +131,6 @@ export class BrowserWarmerService implements OnModuleInit, OnModuleDestroy {
                 return;
             }
 
-            this.logger.log(
-                `Waiting for warming to complete... (queue: ${this.warmupQueue.length}, warming: ${this.isWarmingAny})`,
-            );
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
     }

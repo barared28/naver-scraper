@@ -2,10 +2,19 @@ import path from "path";
 import fs from "fs";
 import axios from "axios";
 
-const FOLDER_RESULT = path.join(__dirname, 'result');
+// ============== CONFIGURATION ==============
+const CONFIG = {
+    FOLDER_RESULT: path.join(__dirname, 'result'),
+    KEYWORDS: ['아이폰', '갤럭시', '삼성'],
+    MAX_RESULT: 100,
+    BATCH_SIZE: 2,  // Number of concurrent requests
+    SEARCH_API_URL: 'http://localhost:3001/naver/search',
+    PRODUCT_API_URL: 'http://localhost:3001/naver/',
+};
 
-if (!fs.existsSync(FOLDER_RESULT)) {
-    fs.mkdirSync(FOLDER_RESULT);
+// ============== SETUP ==============
+if (!fs.existsSync(CONFIG.FOLDER_RESULT)) {
+    fs.mkdirSync(CONFIG.FOLDER_RESULT, { recursive: true });
 }
 
 class Logger {
@@ -24,27 +33,43 @@ class Logger {
 
 const logger = new Logger();
 
+// ============== BATCH PROCESSOR ==============
+// Processes items with concurrent requests limited by batchSize
+// Only batchSize requests run at the same time
+async function processBatch<T>(
+    items: T[],
+    processor: (item: T, index: number) => Promise<void>,
+    batchSize: number
+): Promise<void> {
+    for (let i = 0; i < items.length; i += batchSize) {
+        const batch = items.slice(i, i + batchSize);
+        const promises = batch.map((item, idx) => processor(item, i + idx));
+        await Promise.all(promises);
+    }
+}
+
+// ============== MAIN ==============
 (async () => {
     try {
-        const Keywords = ['아이폰', '갤럭시', '삼성'];
-        const MAX_RESULT = 100;
         let result: string[] = [];
 
-        logger.log(`Starting search with ${Keywords.length} keywords...`);
+        logger.log(`Starting search with ${CONFIG.KEYWORDS.length} keywords...`);
 
-        for (const keyword of Keywords) {
+        // Phase 1: Collect URLs from keywords
+        for (const keyword of CONFIG.KEYWORDS) {
             try {
-                const res = await axios.get('http://localhost:3001/naver/search', {
+                const res = await axios.get(CONFIG.SEARCH_API_URL, {
                     params: { keyword },
                 });
                 
                 if (res.data?.data?.length > 0) {
-                    result.push(...res.data.data);
                     logger.log(`Found ${res.data.data.length} items for "${keyword}" (total: ${result.length})`);
+                    const newItems = res.data.data.filter((item: string) => !result.includes(item));
+                    result.push(...newItems);
                 }
 
-                if (result.length >= MAX_RESULT) {
-                    result = result.slice(0, MAX_RESULT);
+                if (result.length >= CONFIG.MAX_RESULT) {
+                    result = result.slice(0, CONFIG.MAX_RESULT);
                     break;
                 }
             } catch (err) {
@@ -53,37 +78,54 @@ const logger = new Logger();
         }
 
         logger.success(`Collected ${result.length} product URLs`);
-
-        fs.writeFileSync(path.join(FOLDER_RESULT, 'urls.json'), JSON.stringify(result, null, 2));
+        fs.writeFileSync(
+            path.join(CONFIG.FOLDER_RESULT, 'urls.json'),
+            JSON.stringify(result, null, 2)
+        );
         logger.log('Saved urls.json');
 
+        // Phase 2: Fetch product details with batch processing
         let success = 0;
         let failed = 0;
+        const responseTimes: number[] = [];
 
-        for (let i = 0; i < result.length; i++) {
-            const url = result[i];
-            const id = url.split('/').pop() || '';
+        await processBatch(
+            result,
+            async (url: string, index: number) => {
+                const id = url.split('/').pop() || '';
 
-            try {
-                const res = await axios.get('http://localhost:3001/naver/', {
-                    params: { productUrl: url },
-                });
+                try {
+                    const startTime = Date.now();
+                    const res = await axios.get(CONFIG.PRODUCT_API_URL, {
+                        params: { productUrl: url },
+                    });
+                    const endTime = Date.now();
+                    const msResponseTime = endTime - startTime;
+                    responseTimes.push(msResponseTime);
 
-                if (res?.data?.success) {
-                    fs.writeFileSync(path.join(FOLDER_RESULT, `${id}.json`), JSON.stringify(res.data.data || {}, null, 2));
-                    success++;
-                    logger.log(`[${i + 1}/${result.length}] Saved ${id}`);
-                } else {
+                    if (res?.data?.success) {
+                        fs.writeFileSync(
+                            path.join(CONFIG.FOLDER_RESULT, `${id}.json`),
+                            JSON.stringify(res.data.data || {}, null, 2)
+                        );
+                        success++;
+                        logger.log(`[${index + 1}/${result.length}] Saved ${id} finished in ${msResponseTime}ms (${(msResponseTime / 1000).toFixed(2)}s)`);
+                    } else {
+                        failed++;
+                        logger.error(`[${index + 1}/${result.length}] Failed ${id}`);
+                    }
+                } catch (err) {
                     failed++;
-                    logger.error(`[${i + 1}/${result.length}] Failed ${id}`);
+                    logger.error(`[${index + 1}/${result.length}] Error ${id}`, err);
                 }
-            } catch (err) {
-                failed++;
-                logger.error(`[${i + 1}/${result.length}] Error ${id}`, err);
-            }
-        }
+            },
+            CONFIG.BATCH_SIZE
+        );
 
-        logger.success(`Done! Saved ${success}/${result.length}`);
+        // Calculate average response time
+        const averageMsResponseTime = responseTimes.reduce((acc, cur) => acc + cur, 0) / responseTimes.length;
+
+        logger.success(`Done! Saved ${success}/${result.length} (${((success / result.length) * 100).toFixed(2)}%), Failed ${failed}, Average Response Time ${averageMsResponseTime.toFixed(2)}ms (${(averageMsResponseTime / 1000).toFixed(2)}s)`);
 
     } catch (err) {
         logger.error('Fatal error', err);
