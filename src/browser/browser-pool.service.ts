@@ -31,44 +31,16 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
             if (i >= this.maxBrowsers) break;
 
             this.logger.log(`Using proxy: ${proxy}`);
-
-            try {
-                const [ip, port] = proxy.split(':');
-                const launchArgs = {
-                    headless: false,
-                    args: [
-                        `--proxy-server=http://${ip}:${port}`,
-                        `--user-data-dir=~/u/naver-${Buffer.from(proxy).toString('base64')}`,
-                    ],
-                    defaultViewport: null,
-                };
-
-                const queryParams = new URLSearchParams({
-                    token: this.BROWSERLESS_TOKEN,
-                    timeout: '6000000',
-                    launch: JSON.stringify(launchArgs),
-                }).toString();
-
-                const browserWSEndpoint = `ws://${this.BROWSERLESS_URL}?${queryParams}`;
-                const browser = await puppeteer.connect({
-                    browserWSEndpoint,
-                    defaultViewport: null,
-                    acceptInsecureCerts: true,
-                });
-
-                this.pool.push({
-                    browser,
-                    inUse: false,
-                    lastUsedAt: Date.now(),
-                    lastPreparedAt: 0,
-                    isPrepared: false,
-                    proxy,
-                });
-
-                this.logger.log(`Browser ${i + 1} connected`);
-            } catch (error) {
-                this.logger.error(`Failed to launch browser ${i + 1}:`, error);
-            }
+            const browser = await this.launchBrowser(proxy);
+            if (!browser) continue;
+            this.pool.push({
+                browser,
+                inUse: false,
+                lastUsedAt: Date.now(),
+                lastPreparedAt: 0,
+                isPrepared: false,
+                proxy,
+            });
         }
 
         this.logger.log(`Pool initialized with ${this.pool.length} browsers`);
@@ -83,6 +55,38 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
         this.logger.log('Closing all browsers...');
         await Promise.all(this.pool.map(p => p.browser.close().catch(e => this.logger.error(e))));
         this.logger.log('All browsers closed');
+    }
+
+    async launchBrowser(proxy) {
+        try {
+            const [ip, port] = proxy.split(':');
+            const launchArgs = {
+                headless: false,
+                args: [
+                    `--proxy-server=http://${ip}:${port}`,
+                    `--user-data-dir=~/u/naver-${Buffer.from(proxy).toString('base64')}`,
+                ],
+                defaultViewport: null,
+            };
+
+            const queryParams = new URLSearchParams({
+                token: this.BROWSERLESS_TOKEN,
+                timeout: '6000000',
+                launch: JSON.stringify(launchArgs),
+            }).toString();
+
+            const browserWSEndpoint = `ws://${this.BROWSERLESS_URL}?${queryParams}`;
+            const browser = await puppeteer.connect({
+                browserWSEndpoint,
+                defaultViewport: null,
+                acceptInsecureCerts: true,
+            });
+
+            this.logger.log(`Browser connected with proxy: ${proxy}`);
+            return browser;
+        } catch (error) {
+            this.logger.error(`Failed to launch browser with proxy ${proxy}:`, error);
+        }
     }
 
     async getBrowser(): Promise<Browser> {
@@ -116,6 +120,10 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
 
             this.logger.log(`Request waiting for browser. Queue: ${this.waitingQueue.length}`);
         });
+    }
+
+    async destroyBrowser(browser: Browser): Promise<void> {
+        browser?.close().catch(e => this.logger.error(e));
     }
 
     async getBrowserWithTimeout(timeoutMs: number): Promise<Browser> {

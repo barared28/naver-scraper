@@ -152,7 +152,7 @@ export class BrowserWarmerService implements OnModuleInit, OnModuleDestroy {
         this.logger.log(`Scheduled ${this.warmupQueue.length} browsers for initial warming (sequential)`);
 
         // Start processing queue (fire and forget)
-        this.processWarmingQueue();
+        this.processWarmingQueue(true);
     }
 
     /**
@@ -191,7 +191,7 @@ export class BrowserWarmerService implements OnModuleInit, OnModuleDestroy {
     /**
      * Process warming queue sequentially (one at a time)
      */
-    private async processWarmingQueue(): Promise<void> {
+    private async processWarmingQueue(isInitialWarmup: boolean = false): Promise<void> {
         // Skip if warming is already in progress
         if (this.isWarmingAny) {
             this.logger.log('Warming already in progress, queue will be processed after completion');
@@ -208,6 +208,18 @@ export class BrowserWarmerService implements OnModuleInit, OnModuleDestroy {
                 this.warmupQueue.push(pooledBrowser);
                 await new Promise(resolve => setTimeout(resolve, 500));
                 continue;
+            }
+
+            if (!isInitialWarmup) {
+                this.logger.log(`Browser ${pooledBrowser.proxy} is not initial warming, destroying and recreating`);
+                // destroy browser
+                await this.browserPoolService.destroyBrowser(pooledBrowser.browser);
+                // wait 2 seconds
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                // create new browser
+                const browser = await this.browserPoolService.launchBrowser(pooledBrowser.proxy);
+                if (!browser) continue;
+                pooledBrowser.browser = browser;
             }
 
             // Warm single browser (sequential)
